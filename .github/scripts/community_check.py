@@ -6,8 +6,9 @@
 2. 新增行里的GitHub仓库真实存在且公开
 3. 若目标仓库含SKILL.md（人物/主题skill类）→ 额外要求：
    - FIDELITY.md 存在且总分≥70（B级）
+   - FIDELITY.md 不含自评/占位红旗词（预估、待跑、TBD等——分数须为独立双agent实测结果）
    - SKILL.md 含「诚实边界」章节
-   - 有 references/ 调研底稿目录
+   - 有 references/ 目录，且含 references/research/ 调研底稿目录（CONTRIBUTING明文门槛）
    若不含SKILL.md（合集/工具类）→ 仅存在性检查，标注请人工确认类别
 4. 结果贴成PR评论
 
@@ -22,6 +23,39 @@ import sys
 import urllib.request
 
 API = "https://api.github.com"
+
+# FIDELITY.md 自评/占位红旗词：命中即判❌。
+# 依据：保真度分数必须来自独立双agent实测（见 references/fidelity-scorecard.md），
+# 「预填模板+补一行总分」不算跑过测试（先例：PR #70）。
+# 注意：不收录裸「自评」——官方模板引用SkillLens论文时含「LLM自评准确率」字样，会误伤。
+FIDELITY_RED_FLAGS = [
+    "预估",       # 「预估分」「预估总分」
+    "待跑", "待测", "待补", "待定",
+    "占位",
+    "未实测", "未测试",
+    "自评分",     # 「自评分数」，区别于论文引用里的「自评准确率」
+    "YYYY-MM-DD",  # 模板日期没填
+]
+FIDELITY_RED_FLAG_PATTERNS = [
+    (r"\bTBD\b", "TBD"),
+    (r"\bTODO\b", "TODO"),
+    (r"self[- ]assess\w*", "self-assessed"),
+    (r"\bestimated?\b", "estimated"),
+    (r"\bplaceholder\b", "placeholder"),
+    (r"\bNN\s*/\s*\d+", "NN/100（模板分数没填）"),
+]
+
+
+def find_fidelity_red_flags(text):
+    """扫描FIDELITY.md全文，返回命中的红旗词列表（去重、保持顺序）。"""
+    hits = []
+    for w in FIDELITY_RED_FLAGS:
+        if w in text:
+            hits.append(w)
+    for pat, label in FIDELITY_RED_FLAG_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            hits.append(label)
+    return list(dict.fromkeys(hits))
 
 
 def gh(path, token, raw=False):
@@ -59,7 +93,12 @@ def check_target_repo(slug, token):
 
     refs = gh(f"/repos/{slug}/contents/references", token)
     if isinstance(refs, list) and refs:
-        items.append(("✅", "含 references/ 调研底稿"))
+        items.append(("✅", "含 references/ 目录"))
+        research = gh(f"/repos/{slug}/contents/references/research", token)
+        if isinstance(research, list) and research:
+            items.append(("✅", "含 references/research/ 调研底稿目录"))
+        else:
+            items.append(("❌", "缺 references/research/ 调研底稿目录（CONTRIBUTING收录门槛：用女娲流程蒸馏，自包含可溯源）"))
     else:
         items.append(("❌", "缺 references/ 调研底稿（skill需自包含可溯源）"))
 
@@ -74,6 +113,13 @@ def check_target_repo(slug, token):
             items.append(("✅", f"保真度 {m.group(1)}/100 ≥ 70（B级门槛）"))
         else:
             items.append(("❌", f"保真度 {m.group(1)}/100 未达B级门槛（70）"))
+        red_flags = find_fidelity_red_flags(fidelity)
+        if red_flags:
+            items.append(("❌", "FIDELITY.md 检出自评/占位字样：`" + "`、`".join(red_flags[:8])
+                          + "`。保真度分数须由独立双agent实测产生（方法见 references/fidelity-scorecard.md），"
+                            "预填模板或自评预估分不满足收录门槛，请实测后更新评分卡"))
+        else:
+            items.append(("✅", "FIDELITY.md 未检出自评/占位字样"))
 
     ok = all(mark != "❌" for mark, _ in items)
     return ok, items
